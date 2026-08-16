@@ -32,7 +32,9 @@
 |---|---|
 | `VPS_HOST` | `45.157.161.97` |
 | `VPS_USER` | `deploy` |
-| `VPS_SSH_KEY` | приватный SSH-ключ (весь текст файла от `-----BEGIN OPENSSH PRIVATE KEY-----` до `-----END OPENSSH PRIVATE KEY-----`) |
+| `VPS_SSH_KEY_BASE64` | приватный SSH-ключ, преобразованный в одну строку Base64 |
+
+Многострочный секрет `VPS_SSH_KEY` больше не используется. Workflow сначала восстанавливает ключ из Base64, проверяет его через `ssh-keygen`, проверяет SSH-подключение и только затем начинает копирование файлов.
 
 ### 4. Запустите деплой
 
@@ -131,7 +133,7 @@
 1. Подключаемся по SSH и запускаем скрипт первичной настройки `infra/setup-all.sh` (или по отдельности `server-setup.sh`, затем копируем `nginx-n-tiv.conf` в `/etc/nginx/sites-available/`).
 2. Скрипт установит nginx, PostgreSQL 16, Node.js 20, pm2, certbot, ufw, создаст пользователя `deploy` и базу данных `n_tiv`.
 3. Создаём репозиторий `n-tiv-gallery` на GitHub, заливаем туда `frontend/`, `backend/`, `infra/` и `.github/workflows/deploy.yml`.
-4. Добавляем секреты GitHub Actions: `VPS_HOST`, `VPS_USER=deploy`, `VPS_SSH_KEY`.
+4. Добавляем секреты GitHub Actions: `VPS_HOST`, `VPS_USER=deploy`, `VPS_SSH_KEY_BASE64`.
 5. Делаем первый push — автодеплой выкладывает сайт и бэкенд на сервер.
 6. Меняем A-записи `n-tiv.ru` и `www.n-tiv.ru` в Reg.ru на IP сервера.
 7. Запускаем на сервере `infra/ssl.sh` для получения SSL-сертификата (Let's Encrypt проверяет домен, поэтому SSL — только после обновления DNS).
