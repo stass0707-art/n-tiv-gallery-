@@ -285,12 +285,16 @@ app.delete(
 
 // Health check
 app.get("/api/health", async (_req: Request, res: Response) => {
-  const dbOk = await pool
-    .query("SELECT 1")
-    .then(() => true)
-    .catch(() => false);
-  res.json({ ok: dbOk });
+  try {
+    await pool.query("SELECT 1");
+    res.json({ ok: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("Health check failed: database is unreachable:", message);
+    res.status(503).json({ ok: false, error: message });
+  }
 });
+
 
 async function main() {
   app.listen(PORT, () => {
