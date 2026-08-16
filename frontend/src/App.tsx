@@ -30,9 +30,9 @@ export default function App() {
           <Route path="works/:slug" element={<Work />} />
           <Route path="workshops" element={<Navigate to="/events" replace />} />
           <Route path="payment" element={<Navigate to="/about" replace />} />
+          <Route path="admin" element={<Admin />} />
+          <Route path="admin/login" element={<Login />} />
         </Route>
-        <Route path="/admin" element={<Admin />} />
-        <Route path="/admin/login" element={<Login />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </GalleryProvider>
