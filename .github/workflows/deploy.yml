@@ -12,6 +12,7 @@ jobs:
       DEPLOY_HOST: 45.157.161.97
       DEPLOY_USER: deploy
       DEPLOY_PORT: "22"
+      SSH_CONTROL_PATH: /tmp/n-tiv-ssh-control
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,7 +38,15 @@ jobs:
           printf '%s' "$SSH_KEY_BASE64" | base64 --decode > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keygen -y -f ~/.ssh/id_ed25519 > /dev/null
-          ssh-keyscan -p "$DEPLOY_PORT" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          : > ~/.ssh/known_hosts
+          for attempt in 1 2 3 4 5; do
+            echo "Reading SSH host key (attempt $attempt of 5)"
+            if ssh-keyscan -T 15 -p "$DEPLOY_PORT" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null && test -s ~/.ssh/known_hosts; then
+              break
+            fi
+            sleep $((attempt * 5))
+          done
+          test -s ~/.ssh/known_hosts || { echo "Could not read the SSH host key after 5 attempts"; exit 1; }
 
       - name: Open persistent SSH connection
         run: |
@@ -45,69 +54,106 @@ jobs:
           [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "Invalid deployment user"; exit 1; }
           [[ "$DEPLOY_HOST" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "Invalid deployment host"; exit 1; }
           [[ "$DEPLOY_PORT" =~ ^[0-9]+$ ]] || { echo "Invalid SSH port"; exit 1; }
-          rm -f /tmp/n-tiv-ssh-control
-          ssh -MNf \
-            -i ~/.ssh/id_ed25519 \
-            -p "$DEPLOY_PORT" \
-            -o BatchMode=yes \
-            -o ConnectTimeout=15 \
-            -o ControlMaster=yes \
-            -o ControlPath=/tmp/n-tiv-ssh-control \
-            -o ControlPersist=15m \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
-            "${DEPLOY_USER}@${DEPLOY_HOST}"
-          ssh -S /tmp/n-tiv-ssh-control -O check "${DEPLOY_USER}@${DEPLOY_HOST}"
+          connected=false
+          for attempt in 1 2 3 4 5; do
+            rm -f "$SSH_CONTROL_PATH"
+            echo "Opening SSH connection (attempt $attempt of 5)"
+            if ssh -MNf \
+              -i ~/.ssh/id_ed25519 \
+              -p "$DEPLOY_PORT" \
+              -o BatchMode=yes \
+              -o ConnectTimeout=20 \
+              -o ConnectionAttempts=1 \
+              -o ControlMaster=yes \
+              -o ControlPath="$SSH_CONTROL_PATH" \
+              -o ControlPersist=20m \
+              -o IdentitiesOnly=yes \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=4 \
+              -o StrictHostKeyChecking=yes \
+              "${DEPLOY_USER}@${DEPLOY_HOST}"; then
+              connected=true
+              break
+            fi
+            sleep $((attempt * 10))
+          done
+          test "$connected" = true || { echo "SSH connection failed after 5 attempts. Check the VPS SSH journal and firewall."; exit 1; }
+          ssh -S "$SSH_CONTROL_PATH" -O check "${DEPLOY_USER}@${DEPLOY_HOST}"
           echo "Persistent SSH connection opened: ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PORT}"
 
       - name: Prepare server directories and check backend environment
         run: |
           set -euo pipefail
           ssh \
-            -S /tmp/n-tiv-ssh-control \
+            -S "$SSH_CONTROL_PATH" \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
             'set -eu
-             ensure_dir() {
-               dir="$1"
-               if [ ! -d "$dir" ]; then
-                 mkdir -p "$dir" 2>/dev/null || sudo -n mkdir -p "$dir"
-               fi
-               if [ ! -w "$dir" ]; then
-                 sudo -n chown -R "$(id -un):$(id -gn)" "$dir"
-               fi
+             test -x /usr/local/sbin/n-tiv-prepare-dirs || { echo "Server preparation helper is missing: /usr/local/sbin/n-tiv-prepare-dirs"; exit 1; }
+             sudo -n /usr/local/sbin/n-tiv-prepare-dirs
+             for dir in /var/www/n-tiv/dist /var/www/n-tiv/uploads /opt/n-tiv-api; do
                test -w "$dir" || { echo "Directory is not writable: $dir"; exit 1; }
                echo "Ready: $dir"
-             }
-             ensure_dir /var/www/n-tiv/dist
-             ensure_dir /var/www/n-tiv/uploads
-             ensure_dir /opt/n-tiv-api
+             done
              test -f /opt/n-tiv-api/.env || { echo "Backend environment file is missing: /opt/n-tiv-api/.env"; exit 1; }
+             test -r /opt/n-tiv-api/.env || { echo "Backend environment file is not readable by deploy"; exit 1; }
              echo "Server directories and backend environment are ready"'
-
-      - name: Deploy frontend to VPS
-        run: |
-          set -euo pipefail
-          rsync -az --delete \
-            -e "ssh -S /tmp/n-tiv-ssh-control" \
-            frontend/dist/ "${DEPLOY_USER}@${DEPLOY_HOST}:/var/www/n-tiv/dist/"
 
       - name: Deploy backend to VPS
         run: |
           set -euo pipefail
-          rsync -az --delete --exclude='.env' \
-            -e "ssh -S /tmp/n-tiv-ssh-control" \
+          rsync -az --delete \
+            --exclude='.env' \
+            --exclude='node_modules/' \
+            --exclude='dist/' \
+            -e "ssh -S $SSH_CONTROL_PATH" \
             backend/ "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/n-tiv-api/"
 
       - name: Install dependencies and restart backend
         run: |
           set -euo pipefail
           ssh \
-            -S /tmp/n-tiv-ssh-control \
+            -S "$SSH_CONTROL_PATH" \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            'set -eu; cd /opt/n-tiv-api; test -f .env || { echo "Backend .env is missing"; exit 1; }; npm ci; npm run build; npm run migrate; pm2 reload n-tiv-api || pm2 start dist/index.js --name n-tiv-api; pm2 save; npm prune --omit=dev'
+            'set -eu
+             cd /opt/n-tiv-api
+             test -f .env || { echo "Backend .env is missing"; exit 1; }
+             npm ci
+             npm run build
+             npm run migrate
+             if pm2 describe n-tiv-api >/dev/null 2>&1; then
+               pm2 reload n-tiv-api --update-env
+             else
+               pm2 start dist/index.js --name n-tiv-api
+             fi
+             pm2 save
+             for attempt in 1 2 3 4 5 6; do
+               if curl --fail --silent --show-error http://127.0.0.1:3000/api/health | grep -q '"ok":true'; then
+                 echo "Backend health check passed"
+                 exit 0
+               fi
+               sleep 5
+             done
+             pm2 logs n-tiv-api --lines 30 --nostream || true
+             echo "Backend health check failed"
+             exit 1'
+
+      - name: Deploy frontend to VPS
+        run: |
+          set -euo pipefail
+          rsync -az --delete \
+            -e "ssh -S $SSH_CONTROL_PATH" \
+            frontend/dist/ "${DEPLOY_USER}@${DEPLOY_HOST}:/var/www/n-tiv/dist/"
+
+      - name: Verify public website
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 5 https://n-tiv.ru/ > /dev/null
+          curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 5 https://n-tiv.ru/api/health | grep -q '"ok":true'
+          curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 5 https://n-tiv.ru/admin > /dev/null
+          echo "Public website, API and admin route are available"
 
       - name: Close SSH connection and remove temporary key
         if: always()
         run: |
-          ssh -S /tmp/n-tiv-ssh-control -O exit "${DEPLOY_USER}@${DEPLOY_HOST}" 2>/dev/null || true
-          rm -f /tmp/n-tiv-ssh-control ~/.ssh/id_ed25519 ~/.ssh/id_ed25519.pub
+          ssh -S "$SSH_CONTROL_PATH" -O exit "${DEPLOY_USER}@${DEPLOY_HOST}" 2>/dev/null || true
+          rm -f "$SSH_CONTROL_PATH" ~/.ssh/id_ed25519 ~/.ssh/id_ed25519.pub

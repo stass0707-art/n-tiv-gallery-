@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # Run this as root on the fresh Ubuntu 22.04 VPS after the server is created.
 # This script:
@@ -15,10 +15,13 @@ set -e
 #   - Run certbot for SSL (see infra/ssl.sh).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DB_USER="n_tiv"
+DB_NAME="n_tiv"
+DB_PASS="${DB_PASS:-}"
 
 # Generate a random password for the database if not provided.
 if [ -z "$DB_PASS" ]; then
-  DB_PASS="$(openssl rand -base64 24)"
+  DB_PASS="$(openssl rand -hex 24)"
   export DB_PASS
   echo "Generated database password saved to /root/.n-tiv-credentials"
   echo "Keep this file secure — it is needed only for recovery."
