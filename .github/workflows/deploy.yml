@@ -60,6 +60,18 @@ jobs:
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "echo 'SSH connection successful'"
 
+      - name: Prepare directories on VPS
+        run: |
+          set -euo pipefail
+          ssh \
+            -i ~/.ssh/id_ed25519 \
+            -p "$DEPLOY_PORT" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            'set -eu; sudo mkdir -p /var/www/n-tiv/dist /opt/n-tiv-api; sudo chown -R deploy:deploy /var/www/n-tiv /opt/n-tiv-api; ls -ld /var/www/n-tiv/dist /opt/n-tiv-api'
+
       - name: Deploy frontend to VPS
         run: |
           set -euo pipefail
@@ -83,17 +95,9 @@ jobs:
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
-            "${DEPLOY_USER}@${DEPLOY_HOST}" <<'EOF'
-            set -euo pipefail
-            cd /opt/n-tiv-api
-            test -f .env || { echo "Backend .env is missing"; exit 1; }
-            npm ci
-            npm run build
-            npm run migrate
-            pm2 reload n-tiv-api || pm2 start dist/index.js --name n-tiv-api
-            pm2 save
-            npm prune --omit=dev
-          EOF
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            'set -eu; cd /opt/n-tiv-api; test -f .env || { echo "Backend .env is missing"; exit 1; }; npm ci; npm run build; npm run migrate; pm2 reload n-tiv-api || pm2 start dist/index.js --name n-tiv-api; pm2 save; npm prune --omit=dev'
+
 
       - name: Remove temporary SSH key
         if: always()
